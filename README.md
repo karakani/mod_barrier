@@ -4,6 +4,8 @@ apache module to authenticate an access from known bots
 This is very early release. Not well tested. Please be careful to use on production
 environment.
 
+日本語版のREADMEは、 README.ja.md を参照してください。
+
 ## requirement
 
 * Latest apache httpd 2.4 running on CentOS 7. I've not tested other platforms and versions.
