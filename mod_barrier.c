@@ -376,7 +376,7 @@ static const char *barrier_init_cache(cmd_parms *cmd, void *cfg, const char *arg
 	}
 
 	// create instance
-	socache_provider->create(&socache_instance, separator + 1, cmd->temp_pool, cmd->pool);
+	socache_provider->create(&socache_instance, separator ? separator + 1 : separator, cmd->temp_pool, cmd->pool);
 
 	return errmsg;
 }
