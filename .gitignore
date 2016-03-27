@@ -1,3 +1,8 @@
 .cproject
 .project
 .settings
+mod_barrier.la
+mod_barrier.lo
+mod_barrier.o
+mod_barrier.slo
+.libs
