@@ -26,6 +26,7 @@
 #include "ap_socache.h"
 #include "ap_config.h"
 #include "apr_strings.h"
+#include "util_mutex.h"
 
 #define VAL_BANNED	"b"
 #define VAL_TRUSTED "t"
@@ -57,10 +58,13 @@ static int check_hostname(request_rec *r, const char *remote_ip, const char* res
  */
 static int address_test(request_rec *r);
 static apr_status_t destroy_cache(void *data);
+static apr_status_t destroy_mutex(void *data);
 static const char *resolve_host_from_address(apr_sockaddr_t *sa);
 static apr_sockaddr_t *resolve_address_from_host(apr_pool_t *p, const char *host);
 
+static apr_global_mutex_t *socache_mutex = NULL;
 static ap_socache_provider_t* socache_provider;
+
 /**
  * cache instance.
  * data is stored in following format
@@ -213,11 +217,22 @@ static void soft_ban(request_rec *r) {
 
 	if (cache_expire < 1) return;
 
+	apr_status_t mutex_stat = apr_global_mutex_lock(socache_mutex);
+	if (mutex_stat != APR_SUCCESS) {
+		ap_log_rerror(APLOG_MARK, APLOG_ERR, mutex_stat, r, 0, "could not acquire lock.");
+		return;
+	}
+
 	socache_provider->store(socache_instance, r->server,
 			(unsigned char *) remote, strlen(remote),
 			apr_time_now() + (apr_time_from_sec(cache_expire) / 10),
 			(unsigned char *) value, strlen(value),
 			r->pool);
+
+	mutex_stat = apr_global_mutex_unlock(socache_mutex);
+	if (mutex_stat != APR_SUCCESS) {
+		ap_log_rerror(APLOG_MARK, APLOG_ERR, mutex_stat, r, 0, "could not release lock. ignoring.");
+	}
 }
 
 static void ban(request_rec *r) {
@@ -226,11 +241,22 @@ static void ban(request_rec *r) {
 
 	if (cache_expire < 1) return;
 
+	apr_status_t mutex_stat = apr_global_mutex_lock(socache_mutex);
+	if (mutex_stat != APR_SUCCESS) {
+		ap_log_rerror(APLOG_MARK, APLOG_ERR, mutex_stat, r, 0, "could not acquire lock.");
+		return;
+	}
+
 	socache_provider->store(socache_instance, r->server,
 			(unsigned char *) remote, strlen(remote),
 			apr_time_now() + apr_time_from_sec(cache_expire),
 			(unsigned char *) value, strlen(value),
 			r->pool);
+
+	mutex_stat = apr_global_mutex_unlock(socache_mutex);
+	if (mutex_stat != APR_SUCCESS) {
+		ap_log_rerror(APLOG_MARK, APLOG_ERR, mutex_stat, r, 0, "could not release lock. ignoring.");
+	}
 }
 
 static void trust(request_rec *r) {
@@ -239,11 +265,22 @@ static void trust(request_rec *r) {
 
 	if (cache_expire < 1) return;
 
+	apr_status_t mutex_stat = apr_global_mutex_lock(socache_mutex);
+	if (mutex_stat != APR_SUCCESS) {
+		ap_log_rerror(APLOG_MARK, APLOG_ERR, mutex_stat, r, 0, "could not acquire lock.");
+		return;
+	}
+
 	socache_provider->store(socache_instance, r->server,
 			(unsigned char *) remote, strlen(remote),
 			apr_time_now() + apr_time_from_sec(cache_expire),
 			(unsigned char *) value, strlen(value),
 			r->pool);
+
+	mutex_stat = apr_global_mutex_unlock(socache_mutex);
+	if (mutex_stat != APR_SUCCESS) {
+		ap_log_rerror(APLOG_MARK, APLOG_ERR, mutex_stat, r, 0, "could not release lock. ignoring.");
+	}
 }
 
 static int address_test(request_rec *r) {
@@ -302,7 +339,7 @@ static int barrier_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *
 	if (socache_instance) {
 		ap_log_perror(APLOG_MARK, APLOG_NOTICE, 0, plog, "cache initialized");
 	} else {
-		ap_log_perror(APLOG_MARK, APLOG_NOTICE, 0, plog, "cache initialization failed");
+		ap_log_perror(APLOG_MARK, APLOG_TRACE1, 0, plog, "cache initialization failed");
 		return 500;
 	}
 
@@ -313,8 +350,22 @@ static int barrier_post_config(apr_pool_t *pconf, apr_pool_t *plog, apr_pool_t *
 		return 500;
 	}
 
+	// create mutex for socache.
+	rv = ap_mutex_register(pconf, CACHE_NAME, NULL, APR_LOCK_DEFAULT, 0);
+	if (rv != APR_SUCCESS) {
+		ap_log_perror(APLOG_MARK, APLOG_CRIT, 0, plog, "failed to register %s mutex", CACHE_NAME);
+		return 500;
+	}
+
+	rv = ap_global_mutex_create(&socache_mutex, NULL, CACHE_NAME, NULL, s, pconf, 0);
+	if (rv != APR_SUCCESS) {
+		ap_log_perror(APLOG_MARK, APLOG_CRIT, 0, plog, "failed to create %s mutex", CACHE_NAME);
+		return 500;
+	}
+
 	// Register memory clean-up handler
 	apr_pool_cleanup_register(pconf, (void *) s, destroy_cache, apr_pool_cleanup_null);
+	apr_pool_cleanup_register(pconf, (void *) s, destroy_mutex, apr_pool_cleanup_null);
 
 	return OK;
 }
@@ -325,6 +376,15 @@ static apr_status_t destroy_cache(void *s) {
 		socache_instance = NULL;
 	}
 	return APR_SUCCESS;
+}
+
+static apr_status_t destroy_mutex(void *data)
+{
+    if (socache_mutex) {
+        apr_global_mutex_destroy(socache_mutex);
+        socache_mutex = NULL;
+    }
+    return APR_SUCCESS;
 }
 
 static const char *barriser_set_block_expire(cmd_parms *cmd, void *cfg, const char *arg) {
