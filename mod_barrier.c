@@ -294,8 +294,19 @@ static int address_test(request_rec *r) {
 
 	const char* remote = r->useragent_ip;
 
+	apr_status_t mutex_stat = apr_global_mutex_lock(socache_mutex);
+	if (mutex_stat != APR_SUCCESS) {
+		ap_log_rerror(APLOG_MARK, APLOG_ERR, mutex_stat, r, 0, "could not acquire lock.");
+		return STAT_UNKNOWN;
+	}
+
 	rv = socache_provider->retrieve(socache_instance, r->server,
 			(unsigned char *) remote, strlen(remote), (unsigned char*)value, &valueSize, r->pool);
+
+	mutex_stat = apr_global_mutex_unlock(socache_mutex);
+	if (mutex_stat != APR_SUCCESS) {
+		ap_log_rerror(APLOG_MARK, APLOG_ERR, mutex_stat, r, 0, "could not release lock. ignoring.");
+	}
 
 	if (rv == APR_SUCCESS) {
 		value[valueSize] = 0;	// NULL termination
